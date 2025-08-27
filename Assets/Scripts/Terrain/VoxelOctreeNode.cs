@@ -48,14 +48,14 @@ public class VoxelOctreeNode
         _isDirty = false;
         return _value;
     }
-    
+
     public void SetValue(float value)
     {
         _value = value;
         _isDirty = false;
         _parent?.SetDirty(true);
     }
-    
+
     private void SetDirty(bool value)
     {
         if (!_isDirty && value && _parent != null)
@@ -83,17 +83,16 @@ public class VoxelOctreeNode
             _children[i] = new VoxelOctreeNode(this, childCenter, childSize);
         }
     }
-    
+
     private void PruneChildren()
     {
         if (IsLeaf()) return;
         _children = null;
     }
 
-    public void Build(VoxelTerrain terrain)
+    public void Build(VoxelTerrain terrain, VoxelLod lod)
     {
-        // Placeholder for LOD logic
-        LoD = 0; 
+        LoD = lod.GetLod(_center);
 
         if (!_isSet)
         {
@@ -105,27 +104,27 @@ public class VoxelOctreeNode
                 _isSet = true;
             }
         }
-        
+
         if (!IsLeaf())
         {
             foreach (var child in _children)
             {
-                child.Build(terrain);
+                child.Build(terrain, lod);
             }
         }
     }
-    
+
     private bool HasSurface(VoxelTerrain terrain, float value)
     {
         return math.abs(value) < (1 << _size) * terrain.OctreeScale * 1.44224957f * 1.75f;
     }
-    
-    public void ModifySdfInBounds(VoxelTerrain terrain, ModifySettings settings)
+
+    public void ModifySdfInBounds(VoxelTerrain terrain, ModifySettings settings, VoxelLod lod)
     {
         var bounds = GetBounds(terrain.OctreeScale);
         if (!settings.Bounds.Intersects(bounds)) return;
-        
-        LoD = 0; // Placeholder for LOD logic
+
+        LoD = lod.GetLod(_center);
         if (!_isSet) SetValue(terrain.Sdf.Distance(_center));
 
         float oldValue = GetValue();
@@ -134,7 +133,7 @@ public class VoxelOctreeNode
 
         if (HasSurface(terrain, newValue))
         {
-             Subdivide(terrain.OctreeScale);
+            Subdivide(terrain.OctreeScale);
         }
         else
         {
@@ -143,7 +142,7 @@ public class VoxelOctreeNode
                 PruneChildren();
             }
         }
-        
+
         SetValue(newValue);
         _isSet = true;
 
@@ -151,11 +150,11 @@ public class VoxelOctreeNode
         {
             foreach (var child in _children)
             {
-                child.ModifySdfInBounds(terrain, settings);
+                child.ModifySdfInBounds(terrain, settings, lod);
             }
         }
     }
-    
+
     private Bounds GetBounds(float octreeScale)
     {
         float extent = (1 << _size) * octreeScale * 0.5f;
