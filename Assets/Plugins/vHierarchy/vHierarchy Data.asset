@@ -53,6 +53,4 @@ MonoBehaviour:
           isIconRecursive: 0
           isColorRecursive: 0
   bookmarks: []
-  bookmarkedScenePaths:
-  - Assets/Scenes/GPUITest.unity
-  - Assets/Scenes/OctreeScene.unity
+  bookmarkedScenePaths: []
