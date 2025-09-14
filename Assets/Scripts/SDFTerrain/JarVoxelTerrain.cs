@@ -230,7 +230,7 @@ public class JarVoxelTerrain : MonoBehaviour
         {
             unsafe
             {
-                ApplyMeshToChunk(result.chunk, result.meshData);
+                ApplyMeshToChunk(result);
             }
             result.Dispose();
         }
@@ -247,32 +247,46 @@ public class JarVoxelTerrain : MonoBehaviour
         ProcessDeleteQueue();
     }
     
-    private unsafe void ApplyMeshToChunk(VoxelOctreeNode* node, ChunkMeshData meshData)
+    private unsafe void ApplyMeshToChunk(MeshGenerationResult result)
     {
-        long nodePtr = (long)node;
+        long nodePtr = (long)result.chunk;
         if (!_activeChunks.TryGetValue(nodePtr, out JarVoxelChunkComponent chunk))
         {
             chunk = _chunkPool.Count > 0 ? _chunkPool.Dequeue() : Instantiate(chunkScene, transform);
             chunk.gameObject.SetActive(true);
-            chunk.SetNode(node);
+            chunk.SetNode(result.chunk);
             _activeChunks.Add(nodePtr, chunk);
         }
 
-        if (meshData.vertices.Length > 0 && meshData.indices.Length > 0)
+        if (result.vertexCount > 0 && result.indexCount > 0)
         {
+            var vertices = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<float3>(result.vertices, result.vertexCount, Allocator.None);
+            var indices = NativeArrayUnsafeUtility.ConvertExistingDataToNativeArray<int>(result.indices, result.indexCount, Allocator.None);
+
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+            var safetyHandle = AtomicSafetyHandle.Create();
+            NativeArrayUnsafeUtility.SetAtomicSafetyHandle(ref vertices, safetyHandle);
+            NativeArrayUnsafeUtility.SetAtomicSafetyHandle(ref indices, safetyHandle);
+#endif
+
             var mesh = new Mesh();
-            mesh.SetVertices(meshData.vertices);
-            // Set triangles
-            mesh.SetIndexBufferParams(meshData.indices.Length, IndexFormat.UInt32);
-            mesh.SetIndexBufferData(meshData.indices, 0, 0, meshData.indices.Length);
-            SubMeshDescriptor subMesh = new SubMeshDescriptor(0, meshData.indices.Length, MeshTopology.Triangles);
+            mesh.SetVertices(vertices);
+            mesh.SetIndexBufferParams(result.indexCount, IndexFormat.UInt32);
+            mesh.SetIndexBufferData(indices, 0, 0, result.indexCount);
+            SubMeshDescriptor subMesh = new SubMeshDescriptor(0, result.indexCount, MeshTopology.Triangles);
             mesh.SetSubMesh(0, subMesh);
-            
+        
+            mesh.RecalculateBounds(); // Recalculate bounds as well as normals
             mesh.RecalculateNormals();
             chunk.meshFilter.mesh = mesh;
             chunk.meshCollider.sharedMesh = mesh;
+
+#if ENABLE_UNITY_COLLECTIONS_CHECKS
+            AtomicSafetyHandle.Release(safetyHandle);
+#endif
         }
     }
+
 
 
     private void Build()
