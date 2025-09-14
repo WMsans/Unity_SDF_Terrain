@@ -38,8 +38,9 @@ public unsafe struct MeshComputeScheduler : IDisposable
     }
 
 
-    public void Process()
+    public void Process(JarVoxelTerrain terrain)
     {
+        ScheduleJobs(terrain);
         JobHandle.CompleteAll(_jobHandles.AsArray());
         _jobHandles.Clear();
     }

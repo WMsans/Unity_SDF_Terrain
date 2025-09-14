@@ -220,7 +220,7 @@ public class JarVoxelTerrain : MonoBehaviour
             Build();
         }
             
-        _meshComputeScheduler.Process();
+        _meshComputeScheduler.Process(this);
 
         while (_meshComputeScheduler.TryGetResult(out MeshGenerationResult result))
         {

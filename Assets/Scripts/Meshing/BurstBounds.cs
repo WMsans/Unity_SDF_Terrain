@@ -21,8 +21,7 @@ public struct BurstBounds
 
     public BurstBounds Expanded(float amount)
     {
-        var half_amount = amount / 2;
-        return new BurstBounds(center, size + new float3(half_amount, half_amount, half_amount));
+        return new BurstBounds(center, size + new float3(amount, amount, amount));
     }
 
     /// <summary>
