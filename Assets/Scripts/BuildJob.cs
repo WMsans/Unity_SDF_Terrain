@@ -13,6 +13,6 @@ public struct BuildJob : IJob
 
     public void Execute()
     {
-        Root.Build(ref Terrain, Allocator.Temp, MainThreadUpdates, ChunkDeleteQueue);
+        Root.Build(ref Terrain, Allocator.Persistent, MainThreadUpdates, ChunkDeleteQueue);
     }
 }

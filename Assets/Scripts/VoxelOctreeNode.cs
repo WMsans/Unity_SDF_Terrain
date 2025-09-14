@@ -254,8 +254,7 @@ public unsafe struct VoxelOctreeNode
     }
 
     public void Build(ref TerrainData terrain, Allocator allocator, NativeQueue<VoxelOctreeNodePointer>.ParallelWriter mainThreadUpdates, NativeQueue<ChunkDeleteRequest>.ParallelWriter chunkDeleteQueue)    {
-        var stack = new NativeList<VoxelOctreeNodePointer>(128, allocator);
-        
+        var stack = new NativeList<VoxelOctreeNodePointer>(128, Allocator.Temp);        
         fixed(VoxelOctreeNode* thisPtr = &this)
         {
             stack.Add(new VoxelOctreeNodePointer(){Value = thisPtr});
@@ -316,6 +315,7 @@ public unsafe struct VoxelOctreeNode
                 node->RequestDeleteChunk(chunkDeleteQueue);
             }
         }
+        stack.Dispose();
     }
 
     public bool HasSurface(ref TerrainData terrain, float value)
@@ -325,8 +325,7 @@ public unsafe struct VoxelOctreeNode
 
     public void ModifySdfInBounds(ref TerrainData terrain, in ModifySettings settings, Allocator allocator, NativeQueue<VoxelOctreeNodePointer>.ParallelWriter mainThreadUpdates, NativeQueue<ChunkDeleteRequest>.ParallelWriter chunkDeleteQueue)
     {
-        var stack = new NativeList<VoxelOctreeNodePointer>(128, allocator);
-        fixed (VoxelOctreeNode* thisPtr = &this)
+        var stack = new NativeList<VoxelOctreeNodePointer>(128, Allocator.Temp);        fixed (VoxelOctreeNode* thisPtr = &this)
         {
             stack.Add(new VoxelOctreeNodePointer(){Value = thisPtr});
         }
@@ -387,6 +386,8 @@ public unsafe struct VoxelOctreeNode
                 node->RequestDeleteChunk(chunkDeleteQueue);
             }
         }
+
+        stack.Dispose();
     }
     
     public void RequestDeleteChunk(NativeQueue<ChunkDeleteRequest>.ParallelWriter chunkDeleteQueue)

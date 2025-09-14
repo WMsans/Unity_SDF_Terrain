@@ -14,6 +14,6 @@ public struct ModifyJob : IJob
 
     public void Execute()
     {
-        Root.ModifySdfInBounds(ref Terrain, in Settings, Allocator.Temp, MainThreadUpdates, ChunkDeleteQueue);
+        Root.ModifySdfInBounds(ref Terrain, in Settings, Allocator.Persistent, MainThreadUpdates, ChunkDeleteQueue);
     }
 }
