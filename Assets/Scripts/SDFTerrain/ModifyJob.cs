@@ -1,11 +1,13 @@
 using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using UnityEngine;
 
 [BurstCompile]
 public struct ModifyJob : IJob
 {
+    [NativeDisableUnsafePtrRestriction]
     public VoxelOctreeNode Root;
     public ModifySettings Settings;
     public TerrainData Terrain;

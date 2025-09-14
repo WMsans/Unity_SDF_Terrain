@@ -9,9 +9,9 @@ public unsafe class JarVoxelChunkComponent : MonoBehaviour
 
     void Awake()
     {
-        meshFilter = gameObject.AddComponent<MeshFilter>();
-        meshRenderer = gameObject.AddComponent<MeshRenderer>();
-        meshCollider = gameObject.AddComponent<MeshCollider>();
+        if(!meshFilter) meshFilter = gameObject.AddComponent<MeshFilter>();
+        if(!meshRenderer) meshRenderer = gameObject.AddComponent<MeshRenderer>();
+        if(!meshCollider) meshCollider = gameObject.AddComponent<MeshCollider>();
         meshRenderer.material = new Material(Shader.Find("Standard"));
     }
 

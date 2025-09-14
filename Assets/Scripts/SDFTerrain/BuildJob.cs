@@ -1,11 +1,13 @@
 using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
 using UnityEngine;
 
 [BurstCompile]
 public struct BuildJob : IJob
 {
+    [NativeDisableUnsafePtrRestriction]
     public VoxelOctreeNode Root;
     public TerrainData Terrain;
     public NativeQueue<VoxelOctreeNodePointer>.ParallelWriter MainThreadUpdates;

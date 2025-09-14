@@ -23,7 +23,7 @@ public class JarVoxelTerrain : MonoBehaviour
     [Tooltip("The minimum chunk size, expressed as a power of 2 (e.g., 4 means 16x16x16 chunks).")]
     public int minChunkSize = 4;
     [Tooltip("The prefab used to instantiate a terrain chunk.")]
-    public GameObject chunkScene;
+    public JarVoxelChunkComponent chunkScene;
     [Tooltip("The Signed Distance Field resource defining the base terrain shape.")]
     public SdfData sdf;
 
@@ -204,9 +204,9 @@ public class JarVoxelTerrain : MonoBehaviour
 
         for (int i = 0; i < maxConcurrentTasks * 2; i++)
         {
-            GameObject chunkGO = Instantiate(chunkScene, transform);
-            chunkGO.SetActive(false);
-            _chunkPool.Enqueue(chunkGO.AddComponent<JarVoxelChunkComponent>());
+            var chunkGO = Instantiate(chunkScene, transform);
+            chunkGO.gameObject.SetActive(false);
+            _chunkPool.Enqueue(chunkGO);
         }
         
         GenerateEpsilons();
@@ -244,7 +244,6 @@ public class JarVoxelTerrain : MonoBehaviour
             }
         }
 
-        ProcessChunkQueue(delta);
         ProcessDeleteQueue();
     }
     
@@ -253,15 +252,7 @@ public class JarVoxelTerrain : MonoBehaviour
         long nodePtr = (long)node;
         if (!_activeChunks.TryGetValue(nodePtr, out JarVoxelChunkComponent chunk))
         {
-            if (_chunkPool.Count > 0)
-            {
-                chunk = _chunkPool.Dequeue();
-            }
-            else
-            {
-                GameObject chunkGO = Instantiate(chunkScene, transform);
-                chunk = chunkGO.AddComponent<JarVoxelChunkComponent>();
-            }
+            chunk = _chunkPool.Count > 0 ? _chunkPool.Dequeue() : Instantiate(chunkScene, transform);
             chunk.gameObject.SetActive(true);
             chunk.SetNode(node);
             _activeChunks.Add(nodePtr, chunk);
@@ -311,22 +302,6 @@ public class JarVoxelTerrain : MonoBehaviour
         }
         mainThreadUpdates.Dispose();
         _isBuilding = false;
-    }
-
-    private void ProcessChunkQueue(float delta)
-    {
-        if (_updateChunkCollidersQueue.Count == 0) return;
-
-        int rate = (int)math.max(1, math.ceil(updatedCollidersPerSecond * delta));
-        int target = math.min(rate, _updateChunkCollidersQueue.Count);
-
-        for(int i = 0; i < target; ++i)
-        {
-            if (_updateChunkCollidersQueue.TryDequeue(out var node))
-            {
-                // Collider updates are now handled in ApplyMeshToChunk
-            }
-        }
     }
 
     private void GenerateEpsilons()
