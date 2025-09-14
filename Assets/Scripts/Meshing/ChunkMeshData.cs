@@ -13,7 +13,6 @@ public struct ChunkMeshData
     public int lod;
     public ushort boundaries;
     public bool edge_chunk;
-    // TODO: remove bounds
     public BurstBounds bounds;
     public NativeHashMap<int3, int> edgeVertices;
 
@@ -44,5 +43,13 @@ public struct ChunkMeshData
         for (int i = 0; i < indices.Length; i++) {
             collision_mesh[i] = vertices[indices[i]];
         }
+    }
+
+    public void Dispose()
+    {
+        if (vertices.IsCreated) vertices.Dispose();
+        if (indices.IsCreated) indices.Dispose();
+        if (collision_mesh.IsCreated) collision_mesh.Dispose();
+        if (edgeVertices.IsCreated) edgeVertices.Dispose();
     }
 }

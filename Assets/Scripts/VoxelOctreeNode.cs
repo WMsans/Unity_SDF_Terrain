@@ -4,31 +4,25 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using System.Runtime.CompilerServices;
 
-/// <summary>
-/// A C# struct translation of the VoxelOctreeNode C++ class, designed for use with the Unity Burst Compiler.
-/// This struct manages its own children in unmanaged memory and must be handled with care.
-/// </summary>
 [BurstCompile]
 public unsafe struct VoxelOctreeNode
 {
     // --- FIELDS ---
-    // Fields from the original OctreeNode base class
-    public VoxelOctreeNode* _parent;
+    public VoxelOctreeNodePointer _parent;
     public float3 _center;
     public int _size;
-    public VoxelOctreeNode* _children; // Pointer to a block of 8 children
+    public VoxelOctreeNode* _children;
 
-    // Fields from VoxelOctreeNode
     public byte _isMaterialized;
     public int LoD;
     private float _value;
     private bool _isSet;
     public float4 NodeColor;
     private bool _isDirty;
-    public void* _chunk; // Opaque pointer to JarVoxelChunk
+    public bool isChunk;
+    public ushort boundaries;
     private bool _isEnqueued;
 
-    // A static array to replace the std::vector<glm::vec3> in compute_boundaries
     private static readonly float3[] _boundaryOffsets =
     {
         new float3(1, 0, 0), new float3(-1, 0, 0),
@@ -38,45 +32,26 @@ public unsafe struct VoxelOctreeNode
 
     // --- INITIALIZATION & MEMORY MANAGEMENT ---
 
-    /// <summary>
-    /// Initializes a VoxelOctreeNode. This acts as the constructor.
-    /// </summary>
-    public void Initialize(VoxelOctreeNode* parent, float3 center, int size)
+    public VoxelOctreeNode(int size)
     {
-        _parent = parent;
-        _center = center;
+        _parent = new VoxelOctreeNodePointer();
+        _center = float3.zero;
         _size = size;
         _children = null;
         _isMaterialized = 0;
-        _chunk = null;
+        isChunk = false;
+        boundaries = 0;
         _isEnqueued = false;
         _isDirty = true;
-
-        if (_parent != null)
-        {
-            LoD = _parent->LoD;
-            _value = _parent->GetValue();
-            _isSet = _parent->_isSet;
-            NodeColor = _parent->NodeColor;
-        }
-        else
-        {
-            LoD = 0;
-            _value = 0;
-            _isSet = false;
-            NodeColor = float4.zero;
-        }
+        LoD = 0;
+        _value = 0;
+        _isSet = false;
+        NodeColor = float4.zero;
     }
-
-    /// <summary>
-    /// Checks if this node is a leaf (has no children).
-    /// </summary>
+    
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsLeaf() => _children == null;
 
-    /// <summary>
-    /// Subdivides the node, creating 8 children.
-    /// </summary>
     public void Subdivide(float octreeScale, Allocator allocator)
     {
         if (!IsLeaf()) return;
@@ -97,13 +72,28 @@ public unsafe struct VoxelOctreeNode
                 (i & 2) == 0 ? -childOffset : childOffset,
                 (i & 4) == 0 ? -childOffset : childOffset
             );
-            _children[i].Initialize(this, childCenter, childSize);
+            fixed(VoxelOctreeNode* thisPtr = &this)
+            {
+                _children[i] = new VoxelOctreeNode
+                {
+                    _size = childSize,
+                    _parent = new VoxelOctreeNodePointer() { Value = thisPtr },
+                    _center = childCenter,
+                    LoD = this.LoD,
+                    _value = this.GetValue(),
+                    _isSet = this._isSet,
+                    NodeColor = this.NodeColor,
+                    _children = null,
+                    _isMaterialized = 0,
+                    isChunk = false,
+                    boundaries = 0,
+                    _isEnqueued = false,
+                    _isDirty = true
+                };
+            }
         }
     }
 
-    /// <summary>
-    /// Prunes all children of this node recursively.
-    /// </summary>
     public void PruneChildren(Allocator allocator)
     {
         if (IsLeaf()) return;
@@ -124,9 +114,9 @@ public unsafe struct VoxelOctreeNode
 
     public void SetDirty(bool value)
     {
-        if (!_isDirty && value && _parent != null)
+        if (!_isDirty && value && _parent.Value != null)
         {
-            _parent->SetDirty(true);
+            _parent.Value->SetDirty(true);
         }
         _isDirty = value;
     }
@@ -158,15 +148,12 @@ public unsafe struct VoxelOctreeNode
     {
         _value = value;
         _isDirty = false;
-        if (_parent != null)
+        if (_parent.Value != null)
         {
-            _parent->SetDirty(true);
+            _parent.Value->SetDirty(true);
         }
     }
 
-    /// <summary>
-    /// Marks the node as materialized if it or all its children are.
-    /// </summary>
     public void MarkMaterialized()
     {
         if (IsMaterialized()) return;
@@ -177,8 +164,6 @@ public unsafe struct VoxelOctreeNode
         }
         else
         {
-            // Note: The original C++ code contained a likely bug where it would only set the first bit.
-            // This implementation assumes the intent was to set a bit mask for all children.
             for (int i = 0; i < 8; i++)
             {
                 if (_children[i].IsMaterialized())
@@ -188,27 +173,26 @@ public unsafe struct VoxelOctreeNode
             }
         }
 
-        if (_parent != null && IsMaterialized())
+        if (_parent.Value != null && IsMaterialized())
         {
-            _parent->MarkMaterialized();
+            _parent.Value->MarkMaterialized();
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool IsMaterialized() => _isMaterialized == 0b11111111;
-    public void* GetChunk() => _chunk;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool IsChunk(in JarVoxelTerrain terrain) => _size == (LoD + terrain.GetChunkSize());
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool IsAboveChunk(in JarVoxelTerrain terrain) => _size > (LoD + terrain.GetChunkSize());
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool IsAboveMinChunk(in JarVoxelTerrain terrain) => _size > (terrain.GetChunkSize());
     
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool IsOneAboveChunk(in JarVoxelTerrain terrain) => _size == (LoD + terrain.GetChunkSize() + 1);
+    public bool IsChunk(ref TerrainData terrain) => _size == (LoD + terrain.minChunkSize);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsAboveChunk(ref TerrainData terrain) => _size > (LoD + terrain.minChunkSize);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsAboveMinChunk(ref TerrainData terrain) => _size > (terrain.minChunkSize);
+    
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsOneAboveChunk(ref TerrainData terrain) => _size == (LoD + terrain.minChunkSize + 1);
 
     public void PopulateUniqueLoDValues(ref NativeList<int> lodValues)
     {
@@ -226,22 +210,22 @@ public unsafe struct VoxelOctreeNode
 
     public bool IsEnqueued() => _isEnqueued;
 
-    public void FinishedMeshingNotifyParentAndChildren()
+    public void FinishedMeshingNotifyParentAndChildren(NativeQueue<ChunkDeleteRequest>.ParallelWriter chunkDeleteQueue)
     {
-        if (_parent != null)
+        if (_parent.Value != null)
         {
-            _parent->DeleteChunk();
+            _parent.Value->RequestDeleteChunk(chunkDeleteQueue);
         }
         if (!IsLeaf())
         {
             for (int i = 0; i < 8; i++)
             {
-                _children[i].DeleteChunk();
+                _children[i].RequestDeleteChunk(chunkDeleteQueue);
             }
         }
     }
     
-    public bool IsParentEnqueued() => _parent == null ? false : _parent->IsEnqueued();
+    public bool IsParentEnqueued() => _parent.Value != null && _parent.Value->IsEnqueued();
 
     public bool IsAnyChildrenEnqueued()
     {
@@ -254,159 +238,171 @@ public unsafe struct VoxelOctreeNode
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool ShouldDeleteChunk(in JarVoxelTerrain terrain) => false;
+    public bool ShouldDeleteChunk() => false;
     
-    public ushort ComputeBoundaries(in JarVoxelTerrain terrain)
+    public ushort ComputeBoundaries(ref TerrainData terrain)
     {
-        ushort boundaries = 0;
+        ushort newBoundaries = 0;
         float el = EdgeLength(terrain.octreeScale);
         for (int i = 0; i < _boundaryOffsets.Length; i++)
         {
-            int l = terrain.LodAt(_center + el * _boundaryOffsets[i]);
-            if (LoD < l) boundaries |= (ushort)(1 << i);       // High to low
-            if (LoD > l) boundaries |= (ushort)(1 << (i + 8)); // Low to high
+            int l = terrain.lod.LodAt(_center + el * _boundaryOffsets[i]);
+            if (LoD < l) newBoundaries |= (ushort)(1 << i);
+            if (LoD > l) newBoundaries |= (ushort)(1 << (i + 8));
         }
-        return boundaries;
+        return newBoundaries;
     }
 
-    public void Build(ref JarVoxelTerrain terrain, Allocator allocator)
+    public void Build(ref TerrainData terrain, Allocator allocator, NativeQueue<VoxelOctreeNodePointer>.ParallelWriter mainThreadUpdates, NativeQueue<ChunkDeleteRequest>.ParallelWriter chunkDeleteQueue)
     {
-        LoD = terrain.DesiredLod(this);
-        if (LoD < 0) return;
-
-        if (!_isSet)
+        var stack = new NativeList<VoxelOctreeNodePointer>(128, allocator);
+        
+        fixed(VoxelOctreeNode* thisPtr = &this)
         {
-            float value = terrain.get_sdf()->distance(_center);
-            SetValue(value);
-            if (HasSurface(in terrain, value) && (_size > LoD))
-            {
-                Subdivide(terrain.octreeScale, allocator);
-                _isSet = true;
-            }
-            if (IsLeaf() && (_size > LoD || _size == terrain.min_size()))
-            {
-                _isSet = true;
-                MarkMaterialized();
-                return;
-            }
+            stack.Add(new VoxelOctreeNodePointer(){Value = thisPtr});
         }
 
-        if (IsChunk(in terrain) && !IsLeaf() && (_chunk == null || (_chunk->get_boundaries() != ComputeBoundaries(in terrain))))
+        while(stack.Length > 0)
         {
-            QueueUpdate(ref terrain);
-        }
+            var node = stack[^1].Value;
+            stack.RemoveAt(stack.Length - 1);
+            
+            node->LoD = terrain.lod.DesiredLod(*node);
+            if (node->LoD < 0) continue;
 
-        if (!IsLeaf() && !(IsChunk(in terrain) && (_chunk != null)) && (!IsMaterialized() || IsAboveMinChunk(in terrain)))
-        {
-            for (int i = 0; i < 8; i++)
+            if (!node->_isSet)
             {
-                _children[i].Build(ref terrain, allocator);
-            }
-        }
+                float value = SdfUtils.Distance(terrain.sdf, node->_center);
+                node->SetValue(value);
 
-        if (!IsChunk(in terrain))
-        {
-            DeleteChunk();
+                if (node->HasSurface(ref terrain, value) && (node->_size > node->LoD))
+                {
+                    node->Subdivide(terrain.octreeScale, allocator);
+                    node->_isSet = true;
+                }
+                if (node->IsLeaf() && (node->_size > node->LoD || node->_size == terrain.minChunkSize))
+                {
+                    node->_isSet = true;
+                    node->MarkMaterialized();
+                    continue;
+                }
+            }
+
+            if (node->IsChunk(ref terrain))
+            {
+                ushort newBoundaries = node->ComputeBoundaries(ref terrain);
+                if (!node->isChunk || node->boundaries != newBoundaries)
+                {
+                    node->boundaries = newBoundaries;
+                    mainThreadUpdates.Enqueue(new VoxelOctreeNodePointer() { Value = node });
+                }
+                node->isChunk = true;
+            }
+            else
+            {
+                node->isChunk = false;
+            }
+
+
+            if (!node->IsLeaf() && !node->isChunk && (!node->IsMaterialized() || node->IsAboveMinChunk(ref terrain)))
+            {
+                for (int i = 0; i < 8; i++)
+                {
+                    stack.Add(new VoxelOctreeNodePointer(){Value = &node->_children[i]});
+                }
+            }
+
+            if (!node->IsChunk(ref terrain))
+            {
+                node->RequestDeleteChunk(chunkDeleteQueue);
+            }
         }
     }
 
-    public bool HasSurface(in JarVoxelTerrain terrain, float value)
+    public bool HasSurface(ref TerrainData terrain, float value)
     {
         return math.abs(value) < (1 << _size) * terrain.octreeScale * 1.44224957f * 1.75f;
     }
 
-    public void ModifySdfInBounds(ref JarVoxelTerrain terrain, in ModifySettings settings, Allocator allocator)
+    public void ModifySdfInBounds(ref TerrainData terrain, in ModifySettings settings, Allocator allocator, NativeQueue<VoxelOctreeNodePointer>.ParallelWriter mainThreadUpdates, NativeQueue<ChunkDeleteRequest>.ParallelWriter chunkDeleteQueue)
     {
-        if (settings.sdf == null) return;
-        
-        var bounds = GetBounds(terrain.get_octree_scale());
-        if (!settings.bounds.intersects(bounds)) return;
-
-        LoD = terrain.desired_lod(this);
-        if (!_isSet) SetValue(terrain.get_sdf()->distance(_center));
-
-        float oldValue = GetValue();
-        float sdfValue = settings.sdf->distance(_center - settings.position);
-        float newValue = SDF.apply_operation(settings.operation, oldValue, sdfValue, terrain.get_octree_scale());
-
-        if (HasSurface(in terrain, newValue))
+        var stack = new NativeList<VoxelOctreeNodePointer>(128, allocator);
+        fixed (VoxelOctreeNode* thisPtr = &this)
         {
-            Subdivide(terrain.get_octree_scale(), allocator);
-        }
-        else if (settings.bounds.encloses(bounds))
-        {
-            PruneChildren(allocator);
-        }
-        
-        SetValue(newValue);
-        _isSet = true;
-        if (math.abs(newValue - oldValue) > 0.01f)
-        {
-            NodeColor = new float4(1, 0, 0, 1);
+            stack.Add(new VoxelOctreeNodePointer(){Value = thisPtr});
         }
 
-        if (IsLeaf())
+        while (stack.Length > 0)
         {
-            MarkMaterialized();
-        }
-        else
-        {
-            for (int i = 0; i < 8; i++)
+            var node = stack[stack.Length - 1].Value;
+            stack.RemoveAt(stack.Length - 1);
+
+            var bounds = node->GetBounds(terrain.octreeScale);
+            if (!settings.Bounds.Intersects(bounds)) continue;
+
+            node->LoD = terrain.lod.DesiredLod(*node);
+            if (!node->_isSet)
             {
-                _children[i].ModifySdfInBounds(ref terrain, in settings, allocator);
+                node->SetValue(SdfUtils.Distance(terrain.sdf, node->_center));
+            }
+
+            float oldValue = node->GetValue();
+            float sdfValue = SdfUtils.Distance(settings.Sdf, node->_center - settings.Position);
+            float newValue = SdfData.ApplyOperation(settings.Operation, oldValue, sdfValue);
+
+            if (node->HasSurface(ref terrain, newValue))
+            {
+                node->Subdivide(terrain.octreeScale, allocator);
+            }
+            else if (settings.Bounds.Contains(bounds.min) && settings.Bounds.Contains(bounds.max))
+            {
+                node->PruneChildren(allocator);
+            }
+
+            node->SetValue(newValue);
+            node->_isSet = true;
+            if (math.abs(newValue - oldValue) > 0.01f)
+            {
+                node->NodeColor = new float4(1, 0, 0, 1);
+            }
+
+            if (node->IsLeaf())
+            {
+                node->MarkMaterialized();
+            }
+            else
+            {
+                for (int i = 0; i < 8; i++)
+                {
+                    stack.Add(new VoxelOctreeNodePointer(){Value = &node->_children[i]});
+                }
+            }
+
+            if (node->IsChunk(ref terrain))
+            {
+                mainThreadUpdates.Enqueue(new VoxelOctreeNodePointer(){Value = node});
+            }
+            else if (node->isChunk)
+            {
+                node->RequestDeleteChunk(chunkDeleteQueue);
             }
         }
-
-        if (IsChunk(in terrain))
-        {
-            QueueUpdate(ref terrain);
-        }
-        else if (_chunk != null)
-        {
-            DeleteChunk();
-        }
     }
     
-    public void UpdateChunk(ref JarVoxelTerrain terrain, ChunkMeshData* chunkMeshData)
-    {
-        _isEnqueued = false;
-        FinishedMeshingNotifyParentAndChildren();
-        if (chunkMeshData == null || !IsChunk(in terrain))
-        {
-            DeleteChunk();
-            return;
-        }
-
-        if (_chunk == null)
-        {
-            _chunk = (void*)terrain.get_chunk_scene()->instantiate();
-            terrain.add_child(_chunk);
-        }
-        
-        // This method relies on external, non-translatable class behavior
-        // _chunk->update_chunk(terrain, this, chunkMeshData);
-    }
-    
-    public void QueueUpdate(ref JarVoxelTerrain terrain)
-    {
-        if (_isEnqueued) return;
-        _isEnqueued = true;
-        terrain.enqueue_chunk_update(this);
-    }
-
-    public void DeleteChunk()
+    public void RequestDeleteChunk(NativeQueue<ChunkDeleteRequest>.ParallelWriter chunkDeleteQueue)
     {
         if (IsAnyChildrenEnqueued() || IsParentEnqueued()) return;
 
-        if (_chunk != null)
+        if (isChunk)
         {
-            // This requires an interface to the managed world (e.g., via function pointers)
-            // _chunk->queue_free(); 
+            fixed (VoxelOctreeNode* thisPtr = &this)
+            {
+                chunkDeleteQueue.Enqueue(new ChunkDeleteRequest
+                    { chunk = new VoxelOctreeNodePointer { Value = thisPtr } });
+            }
         }
-        _chunk = null;
+        isChunk = false;
     }
-
-    // --- UTILITY & HELPER METHODS (from OctreeNode) ---
 
     public float EdgeLength(float octreeScale)
     {
@@ -416,6 +412,56 @@ public unsafe struct VoxelOctreeNode
     public BurstBounds GetBounds(float octreeScale)
     {
         float edge = EdgeLength(octreeScale);
-        return new BurstBounds { center = _center, extents = new float3(edge * 0.5f) };
+        return new BurstBounds { center = _center, size = new float3(edge) };
+    }
+    
+    public void GetVoxelLeavesInBounds(in TerrainData terrain, BurstBounds bounds, NativeList<VoxelOctreeNode> nodes, int lod = -1, BurstBounds? excludeBounds = null)
+    {
+        var stack = new NativeList<VoxelOctreeNodePointer>(128, Allocator.Temp);
+        fixed (VoxelOctreeNode* thisPtr = &this)
+        {
+            stack.Add(new VoxelOctreeNodePointer(){Value = thisPtr});
+        }
+
+        while (stack.Length > 0)
+        {
+            var node = stack[^1].Value;
+            stack.RemoveAt(stack.Length - 1);
+
+            if (!node->GetBounds(terrain.octreeScale).Intersects(bounds))
+            {
+                continue;
+            }
+
+            if (excludeBounds.HasValue)
+            {
+                BurstBounds exclude = excludeBounds.Value;
+                if(node->GetBounds(terrain.octreeScale).Intersects(exclude))
+                {
+                    continue;
+                }
+            }
+
+            if (node->IsLeaf())
+            {
+                if (lod == -1 || node->LoD == lod)
+                {
+                    nodes.Add(*node);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < 8; i++)
+                {
+                    stack.Add(new  VoxelOctreeNodePointer(){Value = &node->_children[i]});
+                }
+            }
+        }
+    }
+
+    public void GetVoxelLeavesInBounds(JarVoxelTerrain terrain, BurstBounds bounds, NativeList<VoxelOctreeNode> nodes, int lod = -1, BurstBounds? excludeBounds = null)
+    {
+        var terrainData = terrain.GetTerrainData();
+        GetVoxelLeavesInBounds(in terrainData, bounds, nodes, lod, excludeBounds);
     }
 }

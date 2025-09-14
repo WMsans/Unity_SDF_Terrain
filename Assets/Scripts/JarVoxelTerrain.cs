@@ -1,10 +1,13 @@
 using UnityEngine;
 using System.Collections.Generic;
-using System.Threading.Tasks;
+using Unity.Burst;
+using Unity.Jobs;
+using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
+using Unity.Mathematics;
 using System;
 
 /// <summary>
-/// C# translation of the JarVoxelTerrain Godot C++ class for Unity.
 /// Manages the generation, modification, and level-of-detail of a voxel terrain.
 /// </summary>
 public class JarVoxelTerrain : MonoBehaviour
@@ -19,11 +22,9 @@ public class JarVoxelTerrain : MonoBehaviour
     [Tooltip("The minimum chunk size, expressed as a power of 2 (e.g., 4 means 16x16x16 chunks).")]
     public int minChunkSize = 4;
     [Tooltip("The prefab used to instantiate a terrain chunk.")]
-    public GameObject chunkScene; // Equivalent to Godot's PackedScene
+    public GameObject chunkScene;
     [Tooltip("The Signed Distance Field resource defining the base terrain shape.")]
-    public IJarSignedDistanceField sdf;
-    [Tooltip("Whether to generate cubic-style voxels.")]
-    public bool cubicVoxels = false;
+    public SdfData sdf;
 
     [Header("Performance")]
     [Tooltip("The maximum number of concurrent mesh generation tasks.")]
@@ -43,87 +44,92 @@ public class JarVoxelTerrain : MonoBehaviour
 
     // --- Private Fields ---
     private MeshComputeScheduler _meshComputeScheduler;
-    private List<float> _voxelEpsilons = new List<float>();
+    private NativeList<float> _voxelEpsilons;
     private VoxelOctreeNode _voxelRoot;
-    private JarVoxelLoD _voxelLod;
+    private JarVoxelLod _voxelLod;
 
-    private readonly Queue<ModifySettings> _modifySettingsQueue = new Queue<ModifySettings>();
-    private readonly Queue<VoxelOctreeNode> _updateChunkCollidersQueue = new Queue<VoxelOctreeNode>();
+    private NativeQueue<ModifySettings> _modifySettingsQueue;
+    private NativeQueue<VoxelOctreeNode> _updateChunkCollidersQueue;
+    private NativeQueue<ChunkDeleteRequest> _chunkDeleteQueue;
 
-    private volatile bool _isBuilding = false;
-    private int _chunkSize = 0;
+    private Dictionary<long, JarVoxelChunkComponent> _activeChunks = new Dictionary<long, JarVoxelChunkComponent>();
+    private Queue<JarVoxelChunkComponent> _chunkPool = new Queue<JarVoxelChunkComponent>();
+
+    private bool _isBuilding = false;
 
     // --- Unity MonoBehaviour Methods ---
 
-    /// <summary>
-    /// Corresponds to Godot's NOTIFICATION_ENTER_TREE. Initializes the terrain system.
-    /// </summary>
     private void Awake()
     {
         Initialize();
     }
 
-    /// <summary>
-    /// Corresponds to Godot's NOTIFICATION_INTERNAL_PROCESS. Runs per-frame logic.
-    /// </summary>
     private void Update()
     {
         Process();
     }
 
+    private void OnDestroy()
+    {
+        _voxelEpsilons.Dispose();
+        _modifySettingsQueue.Dispose();
+        _updateChunkCollidersQueue.Dispose();
+        _chunkDeleteQueue.Dispose();
+        _meshComputeScheduler.Dispose();
+
+        foreach (var chunk in _activeChunks.Values)
+        {
+            Destroy(chunk.gameObject);
+        }
+        _activeChunks.Clear();
+
+        foreach (var chunk in _chunkPool)
+        {
+            Destroy(chunk.gameObject);
+        }
+        _chunkPool.Clear();
+    }
+
     // --- Public API Methods ---
 
-    /// <summary>
-    /// Modifies the terrain using a generic SDF.
-    /// </summary>
-    public void Modify(IJarSignedDistanceField modifySdf, SDF.Operation operation, Vector3 position, float radius)
+    public void Modify(SdfData modifySdf, Operation operation, Vector3 position, float radius)
     {
-        // Note: The original C++ created a new JarSphereSdf here.
-        // This translation assumes 'modifySdf' is already configured.
         var edge = Vector3.one * radius;
         _modifySettingsQueue.Enqueue(new ModifySettings
         {
             Sdf = modifySdf,
-            Bounds = new Bounds(position, edge * 2.0f),
+            Bounds = new BurstBounds(position, edge * 2.0f),
             Position = position,
             Operation = operation
         });
     }
 
-    /// <summary>
-    /// Modifies the terrain with a sphere shape (additive or subtractive).
-    /// </summary>
     public void SphereEdit(Vector3 worldPosition, float radius, bool operationIsUnion)
     {
         if (_isBuilding) return;
 
-        // Convert world position to this node's local space
         Vector3 localPosition = transform.InverseTransformPoint(worldPosition);
-        var operation = operationIsUnion ? SDF.Operation.SDF_OPERATION_UNION : SDF.Operation.SDF_OPERATION_SUBTRACTION;
+        var operation = operationIsUnion ? Operation.SDF_OPERATION_UNION : Operation.SDF_OPERATION_SUBTRACTION;
 
-        // In C#, you typically use ScriptableObject.CreateInstance for this pattern.
-        var sphereSdf = ScriptableObject.CreateInstance<JarSphereSdf>();
-        sphereSdf.SetRadius(radius);
+        var sphereSdf = SdfData.CreateSphere(Vector3.zero, radius);
 
         var edge = Vector3.one * (radius + octreeScale * 2.0f);
 
         ModifySettings settings = new ModifySettings
         {
             Sdf = sphereSdf,
-            Bounds = new Bounds(localPosition, edge * 2.0f),
+            Bounds = new BurstBounds(localPosition, edge * 2.0f),
             Position = localPosition,
             Operation = operation
         };
-        _voxelRoot.ModifySdfInBounds(this, settings);
+        
+        ProcessModifyJob(settings);
     }
-
-    /// <summary>
-    /// Spawns simple spheres within a given area to visualize the octree leaf nodes.
-    /// </summary>
+    
     public void SpawnDebugSpheresInBounds(Vector3 position, float range)
     {
-        List<VoxelOctreeNode> nodes = new List<VoxelOctreeNode>();
-        var bounds = new Bounds(position, Vector3.one * range * 2.0f);
+        NativeList<VoxelOctreeNode> nodes = new NativeList<VoxelOctreeNode>(Allocator.Temp);
+        var bounds = new BurstBounds(position, Vector3.one * range * 2.0f);
         GetVoxelLeavesInBounds(bounds, nodes);
 
         Material redMaterial = new Material(Shader.Find("Standard")) { color = Color.red };
@@ -140,55 +146,36 @@ public class JarVoxelTerrain : MonoBehaviour
             renderer.material = (n.GetValue() > 0) ? greenMaterial : redMaterial;
             Destroy(sphereInstance.GetComponent<SphereCollider>()); // Remove collider
         }
+        nodes.Dispose();
     }
-
-    /// <summary>
-    /// Forces the LOD system to re-evaluate the camera's position and rebuild chunks if needed.
-    /// </summary>
-    public void ForceUpdateLod()
-    {
-        if (_voxelLod.UpdateCameraPosition(this, true))
-            Build();
-    }
-
-    /// <summary>
-    /// Enqueues a chunk's node for collider generation.
-    /// </summary>
+    
     public void EnqueueChunkCollider(VoxelOctreeNode node)
     {
-        if (node != null)
-        {
-            _updateChunkCollidersQueue.Enqueue(node);
-        }
+        _updateChunkCollidersQueue.Enqueue(node);
     }
-
-    /// <summary>
-    /// Enqueues a chunk's node for mesh generation.
-    /// </summary>
-    public void EnqueueChunkUpdate(VoxelOctreeNode node)
+    
+    public unsafe void EnqueueChunkUpdate(VoxelOctreeNode* node)
     {
         _meshComputeScheduler.Enqueue(node);
     }
 
     // --- Public Getters / Properties ---
-    public bool IsBuilding() => _isBuilding;
-    public int GetChunkSize() => _chunkSize;
+    public bool IsBuilding => _isBuilding;
+    public int ChunkSize => 1 << minChunkSize;
 
     // --- Octree Query Methods ---
-    public void GetVoxelLeavesInBounds(Bounds bounds, List<VoxelOctreeNode> nodes) => _voxelRoot.GetVoxelLeavesInBounds(this, bounds, nodes);
-    public void GetVoxelLeavesInBounds(Bounds bounds, int lod, List<VoxelOctreeNode> nodes) => _voxelRoot.GetVoxelLeavesInBounds(this, bounds, lod, nodes);
-    public void GetVoxelLeavesInBoundsExcludingBounds(Bounds bounds, Bounds excludeBounds, int lod, List<VoxelOctreeNode> nodes) => _voxelRoot.GetVoxelLeavesInBoundsExcludingBounds(this, bounds, excludeBounds, lod, nodes);
-    
+    public void GetVoxelLeavesInBounds(BurstBounds bounds, NativeList<VoxelOctreeNode> nodes, int lod = -1, BurstBounds? excludeBounds = null) => 
+        _voxelRoot.GetVoxelLeavesInBounds(this, bounds, nodes, lod, excludeBounds);
+
     // --- LOD Accessors ---
-    public Vector3 GetCameraPosition() => _voxelLod.GetCameraPosition();
+    public float3 GetCameraPosition() => _voxelLod.CameraPosition;
     public int DesiredLod(VoxelOctreeNode node) => _voxelLod.DesiredLod(node);
-    public int LodAt(Vector3 position) => _voxelLod.LodAt(position);
+    public int LodAt(float3 position) => _voxelLod.LodAt(position);
 
     // --- Private Implementation ---
 
     private void Initialize()
     {
-        // Don't run initialization logic in the editor when not in play mode
         if (Application.isEditor && !Application.isPlaying) return;
 
         if (chunkScene == null)
@@ -196,17 +183,28 @@ public class JarVoxelTerrain : MonoBehaviour
             Debug.LogError("Chunk Scene prefab is not assigned.", this);
             return;
         }
-        if (sdf == null)
+        if (sdf.Type == SdfType.None)
         {
             Debug.LogError("SDF asset is not assigned.", this);
             return;
         }
 
-        _chunkSize = 1 << minChunkSize;
-        _voxelLod = new JarVoxelLoD(lodAutomaticUpdate, lodAutomaticUpdateDistance, lodLevelCount, lodShellSize, octreeScale);
+        _voxelLod = new JarVoxelLod(lodAutomaticUpdate, lodAutomaticUpdateDistance, lodLevelCount, lodShellSize, octreeScale);
         _meshComputeScheduler = new MeshComputeScheduler(maxConcurrentTasks);
         _voxelRoot = new VoxelOctreeNode(size);
+        _voxelEpsilons = new NativeList<float>(size + 1, Allocator.Persistent);
+        _modifySettingsQueue = new NativeQueue<ModifySettings>(Allocator.Persistent);
+        _updateChunkCollidersQueue = new NativeQueue<VoxelOctreeNode>(Allocator.Persistent);
+        _chunkDeleteQueue = new NativeQueue<ChunkDeleteRequest>(Allocator.Persistent);
 
+        for (int i = 0; i < maxConcurrentTasks * 2; i++)
+        {
+            GameObject chunkGO = Instantiate(chunkScene, transform);
+            chunkGO.SetActive(false);
+            _chunkPool.Enqueue(chunkGO.AddComponent<JarVoxelChunkComponent>());
+        }
+        
+        GenerateEpsilons();
         Build();
     }
 
@@ -216,56 +214,107 @@ public class JarVoxelTerrain : MonoBehaviour
         
         float delta = Time.deltaTime;
         
-        if (!_isBuilding && !_meshComputeScheduler.IsMeshing() && _voxelLod.Process(this, false))
+        if (!_isBuilding && !_meshComputeScheduler.IsMeshing() && _voxelLod.Process(playerNode.position, delta))
+        {
             Build();
+        }
             
-        _meshComputeScheduler.Process(this);
+        _meshComputeScheduler.Process();
+
+        while (_meshComputeScheduler.TryGetResult(out MeshGenerationResult result))
+        {
+            unsafe
+            {
+                ApplyMeshToChunk(result.chunk, result.meshData);
+            }
+            result.Dispose();
+        }
+
 
         if (_modifySettingsQueue.Count > 0)
         {
-            ProcessModifyQueue();
+            if (_modifySettingsQueue.TryDequeue(out var settings))
+            {
+                ProcessModifyJob(settings);
+            }
         }
 
         ProcessChunkQueue(delta);
+        ProcessDeleteQueue();
     }
+    
+    private unsafe void ApplyMeshToChunk(VoxelOctreeNode* node, ChunkMeshData meshData)
+    {
+        long nodePtr = (long)node;
+        if (!_activeChunks.TryGetValue(nodePtr, out JarVoxelChunkComponent chunk))
+        {
+            if (_chunkPool.Count > 0)
+            {
+                chunk = _chunkPool.Dequeue();
+            }
+            else
+            {
+                GameObject chunkGO = Instantiate(chunkScene, transform);
+                chunk = chunkGO.AddComponent<JarVoxelChunkComponent>();
+            }
+            chunk.gameObject.SetActive(true);
+            chunk.SetNode(node);
+            _activeChunks.Add(nodePtr, chunk);
+        }
+
+        if (meshData.vertices.Length > 0 && meshData.indices.Length > 0)
+        {
+            var mesh = new Mesh();
+            mesh.SetVertices(meshData.vertices);
+            mesh.SetTriangles(meshData.indices, 0);
+            mesh.RecalculateNormals();
+            chunk.meshFilter.mesh = mesh;
+            chunk.meshCollider.sharedMesh = mesh;
+        }
+    }
+
 
     private void Build()
     {
-        if (_isBuilding || (_meshComputeScheduler != null && _meshComputeScheduler.IsMeshing()))
-            return;
+        if (_isBuilding || _meshComputeScheduler.IsMeshing()) return;
 
-        // Run the build process on a background thread to avoid freezing the main thread.
-        Task.Run(() => {
-            _isBuilding = true;
-            try
+        _isBuilding = true;
+        var mainThreadUpdates = new NativeQueue<VoxelOctreeNodePointer>(Allocator.TempJob);
+        
+        var job = new BuildJob
+        {
+            Root = _voxelRoot,
+            Terrain = GetTerrainData(),
+            MainThreadUpdates = mainThreadUpdates.AsParallelWriter(),
+            ChunkDeleteQueue = _chunkDeleteQueue.AsParallelWriter()
+        };
+        
+        var handle = job.Schedule();
+        handle.Complete();
+
+        while(mainThreadUpdates.TryDequeue(out var nodePtr))
+        {
+            unsafe
             {
-                _voxelRoot.Build(this);
+                EnqueueChunkUpdate(nodePtr.Value);
             }
-            finally
-            {
-                _isBuilding = false;
-            }
-        });
+        }
+        mainThreadUpdates.Dispose();
+        _isBuilding = false;
     }
 
     private void ProcessChunkQueue(float delta)
     {
         if (_updateChunkCollidersQueue.Count == 0) return;
 
-        int rate = Math.Max(1, (int)Math.Ceiling(updatedCollidersPerSecond * delta));
-        int target = Math.Min(rate, _updateChunkCollidersQueue.Count);
+        int rate = (int)math.max(1, math.ceil(updatedCollidersPerSecond * delta));
+        int target = math.min(rate, _updateChunkCollidersQueue.Count);
 
-        int processed = 0;
-        while (processed < target && _updateChunkCollidersQueue.Count > 0)
+        for(int i = 0; i < target; ++i)
         {
-            VoxelOctreeNode node = _updateChunkCollidersQueue.Dequeue();
-            if (node == null) continue;
-
-            JarVoxelChunk chunk = node.GetChunk();
-            if (chunk != null)
+            if (_updateChunkCollidersQueue.TryDequeue(out var node))
             {
-                chunk.UpdateCollisionMesh();
-                processed++;
+                // Collider updates are now handled in ApplyMeshToChunk
             }
         }
     }
@@ -274,41 +323,72 @@ public class JarVoxelTerrain : MonoBehaviour
     {
         int numElements = size + 1;
         _voxelEpsilons.Clear();
-        _voxelEpsilons.Capacity = numElements;
-
-        List<int> sizes = new List<int>(numElements);
+        
         for (int i = 0; i < numElements; i++)
         {
-            sizes.Add(1 << i);
-        }
-
-        for (int i = 0; i < sizes.Count; i++)
-        {
-            int s = sizes[i];
+            int s = 1 << i;
             float x = s * octreeScale;
             _voxelEpsilons.Add(1.75f * x);
         }
     }
 
-    private void ProcessModifyQueue()
+    private void ProcessModifyJob(ModifySettings settings)
     {
         if (_isBuilding) return;
 
         _isBuilding = true;
         
-        // This is kept synchronous to avoid race conditions with other processes.
-        // The original C++ code used a detached thread, which can be risky.
-        try
+        var mainThreadUpdates = new NativeQueue<VoxelOctreeNodePointer>(Allocator.TempJob);
+
+        var job = new ModifyJob
         {
-            if (_modifySettingsQueue.Count > 0)
+            Root = _voxelRoot,
+            Settings = settings,
+            Terrain = GetTerrainData(),
+            MainThreadUpdates = mainThreadUpdates.AsParallelWriter(),
+            ChunkDeleteQueue = _chunkDeleteQueue.AsParallelWriter()
+        };
+        
+        var handle = job.Schedule();
+        handle.Complete();
+
+        while(mainThreadUpdates.TryDequeue(out var nodePtr))
+        {
+            unsafe
             {
-                var settings = _modifySettingsQueue.Dequeue();
-                _voxelRoot.ModifySdfInBounds(this, settings);
+                EnqueueChunkUpdate(nodePtr.Value);
             }
         }
-        finally
+        mainThreadUpdates.Dispose();
+        
+        _isBuilding = false;
+    }
+
+    private void ProcessDeleteQueue()
+    {
+        while (_chunkDeleteQueue.TryDequeue(out var request))
         {
-            _isBuilding = false;
+            unsafe
+            {
+                long nodePtr = (long)request.chunk.Value;
+                if (_activeChunks.TryGetValue(nodePtr, out JarVoxelChunkComponent chunk))
+                {
+                    chunk.gameObject.SetActive(false);
+                    _chunkPool.Enqueue(chunk);
+                    _activeChunks.Remove(nodePtr);
+                }
+            }
         }
+    }
+
+    public TerrainData GetTerrainData()
+    {
+        return new TerrainData
+        {
+            octreeScale = this.octreeScale,
+            minChunkSize = this.minChunkSize,
+            sdf = this.sdf,
+            lod = _voxelLod,
+        };
     }
 }

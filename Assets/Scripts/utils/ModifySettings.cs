@@ -1,10 +1,9 @@
 using Unity.Mathematics;
-using UnityEngine;
 
 public struct ModifySettings
 {
-    public IJarSignedDistanceField sdf;
-    public BurstBounds bounds;
-    public float3 position;
-    public Operation operation;
+    public SdfData Sdf; 
+    public BurstBounds Bounds;
+    public float3 Position;
+    public Operation Operation;
 }

@@ -29,40 +29,58 @@ public struct JarVoxelLod
         ShellSize = shellSize;
         OctreeScale = octreeScale;
         AutoMeshCoolDown = 0.0f;
-        CameraPosition = new(0,0,0);
+        CameraPosition = new float3(float.MinValue); // Initialize to a value that guarantees the first update
     }
 
-    
-    // The following methods cannot be translated directly without the definitions for
-    // 'JarVoxelTerrain' and 'VoxelOctreeNode', as per the user request to not
-    // implement placeholder types.
-
-    public bool Process(ref JarVoxelTerrain terrain, float delta)
+    /// <summary>
+    /// Processes the LOD logic for a frame.
+    /// </summary>
+    /// <param name="terrainPosition">The current position of the terrain transform.</param>
+    /// <param name="playerPosition">The current position of the player/camera.</param>
+    /// <param name="delta">The time since the last frame.</param>
+    /// <returns>True if an LOD update is required, false otherwise.</returns>
+    public bool Process(float3 playerPosition, float delta)
     {
         AutoMeshCoolDown -= delta;
-        if (!AutomaticUpdate) return false;
-        // The method 'UpdateCameraPosition' is also dependent on 'JarVoxelTerrain'.
-        // return UpdateCameraPosition(terrain, false);
-        return false;
+        if (!AutomaticUpdate || AutoMeshCoolDown > 0)
+        {
+            return false;
+        }
+
+        return UpdateCameraPosition(playerPosition, false);
     }
 
-    public bool UpdateCameraPosition(ref JarVoxelTerrain terrain, bool force)
+    /// <summary>
+    /// Updates the camera position for LOD calculations and determines if a rebuild is needed.
+    /// </summary>
+    /// <param name="newPosition">The new position of the camera/player.</param>
+    /// <param name="force">If true, forces an update regardless of distance.</param>
+    /// <returns>True if the terrain should be rebuilt, false otherwise.</returns>
+    public bool UpdateCameraPosition(float3 newPosition, bool force)
     {
-        // This method relies on Godot-specific and terrain-specific logic
-        // which cannot be replicated without its definition.
-        // Example: terrain.is_building(), terrain.get_player_node(), etc.
-        return false;
+        if (!force && distancesq(newPosition, CameraPosition) < AutomaticUpdateDistance * AutomaticUpdateDistance)
+        {
+            return false;
+        }
+
+        CameraPosition = newPosition;
+        AutoMeshCoolDown = 0.2f; // Cooldown to prevent rapid updates
+        return true;
     }
 
+    /// <summary>
+    /// Determines the desired LOD for a given octree node.
+    /// </summary>
+    /// <param name="node">The VoxelOctreeNode to evaluate.</param>
+    /// <returns>The desired LOD level.</returns>
     public int DesiredLod(VoxelOctreeNode node)
     {
-        // This method depends on 'VoxelOctreeNode', which was not provided.
-        // It also uses an undeclared field '_maxChunkSize'.
-        // var l = node.Size > _maxChunkSize ? 0 : LodAt(node.Center);
-        // return l;
-        return 0;
+        // If the node's size is greater than the max chunk size, it's a high-level node that should be subdivided.
+        // We return LOD 0 for these high-level nodes to encourage subdivision.
+        var l = LodAt(node._center);
+        return l;
     }
-    
+
     /// <summary>
     /// Gets the camera position used for LOD calculations.
     /// </summary>
@@ -121,11 +139,11 @@ public struct JarVoxelLod
         const float RChunksize = 1.0f / 16.0f;
         float3 pos = position * RChunksize;
         float3 camPos = CameraPosition * RChunksize;
-        
+
         // This is a direct translation of the logarithmic approximation from the C++ code.
         float3 delta = abs(pos - camPos) / (2.0f * ShellSize);
         int lod = (int)max(0, floor(log2(max(1.0f, cmax(delta)))));
-        
+
         // The approximation can be off by 1, so we check neighbors to correct it.
         if (!IsInLodShell(lod, pos, camPos))
         {

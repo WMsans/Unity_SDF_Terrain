@@ -1,21 +1,27 @@
 using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
-using UnityEngine;
 
 [BurstCompile]
-public struct MeshGenerationJob : IJob
+public unsafe struct MeshGenerationJob : IJob
 {
-    public JarVoxelTerrain terrain;
-    public VoxelOctreeNode chunk;
-    public NativeQueue<ChunkMeshData>.ParallelWriter ChunksToProcess;
+    [ReadOnly] public TerrainData terrain;
+    [NativeDisableUnsafePtrRestriction] public VoxelOctreeNode* chunk;
+    public NativeQueue<MeshGenerationResult>.ParallelWriter ChunksToProcess;
 
     public void Execute()
     {
         var meshCompute = new StitchedSurfaceNets(terrain, chunk);
-        ChunkMeshData? chunkMeshData = meshCompute.generate_mesh_data(terrain);
-        if (chunkMeshData.HasValue) {
-            ChunksToProcess.Enqueue(chunkMeshData.Value);
+        var chunkMeshData = meshCompute.GenerateMeshData();
+        
+        if (chunkMeshData.vertices.IsCreated)
+        {
+            ChunksToProcess.Enqueue(new MeshGenerationResult
+            {
+                chunk = chunk,
+                meshData = chunkMeshData
+            });
         }
     }
 }

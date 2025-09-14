@@ -1,90 +1,87 @@
+using System;
 using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
-using UnityEngine;
+
+// Wrapper struct to hold a pointer, allowing it to be used as a generic type argument in NativeQueue.
+[BurstCompile]
+public unsafe struct VoxelOctreeNodePointer
+{
+    [NativeDisableUnsafePtrRestriction]
+    public VoxelOctreeNode* Value;
+}
+
 
 [BurstCompile]
-public struct MeshComputeScheduler
+public unsafe struct MeshComputeScheduler : IDisposable
 {
-    private NativeQueue<VoxelOctreeNode> ChunksToAdd;
-    private NativeQueue<ChunkMeshData> ChunksToProcess;
+    private NativeQueue<VoxelOctreeNodePointer> _chunksToAdd;
+    private NativeQueue<MeshGenerationResult> _chunksToProcess;
     private NativeList<JobHandle> _jobHandles;
-
-    // Debug variables
-    private int _totalTris;
-    private int _prevTris;
 
     public MeshComputeScheduler(int maxConcurrentTasks)
     {
-        _totalTris = 0;
-        _prevTris = 0;
-        ChunksToAdd = new NativeQueue<VoxelOctreeNode>(Allocator.Persistent);
-        ChunksToProcess = new NativeQueue<ChunkMeshData>(Allocator.Persistent);
+        _chunksToAdd = new NativeQueue<VoxelOctreeNodePointer>(Allocator.Persistent);
+        _chunksToProcess = new NativeQueue<MeshGenerationResult>(Allocator.Persistent);
         _jobHandles = new NativeList<JobHandle>(maxConcurrentTasks, Allocator.Persistent);
     }
 
-    public void enqueue(VoxelOctreeNode node)
+    public void Enqueue(VoxelOctreeNode* node)
     {
-        ChunksToAdd.Enqueue(node);
+        _chunksToAdd.Enqueue(new VoxelOctreeNodePointer { Value = node });
+    }
+    
+    public bool TryGetResult(out MeshGenerationResult result)
+    {
+        return _chunksToProcess.TryDequeue(out result);
     }
 
-    public void process(JarVoxelTerrain terrain)
-    {
-        _prevTris = _totalTris;
-        if (!terrain.is_building())
-        {
-            process_queue(terrain);
-        }
 
-        JobHandle.CompleteAll(_jobHandles);
+    public void Process()
+    {
+        JobHandle.CompleteAll(_jobHandles.AsArray());
         _jobHandles.Clear();
+    }
 
-        while (ChunksToProcess.Count > 0)
+    public void ScheduleJobs(JarVoxelTerrain terrain)
+    {
+        while (_chunksToAdd.TryDequeue(out VoxelOctreeNodePointer chunkPointer))
         {
-            if (ChunksToProcess.TryDequeue(out ChunkMeshData chunkMeshData))
-            {
-                 // In a real implementation, you'd get the node associated with this mesh data
-                 // and call an update method.
-                 // node.update_chunk(terrain, chunkMeshData);
-            }
+            RunTask(terrain, chunkPointer.Value);
         }
     }
 
-    private void process_queue(JarVoxelTerrain terrain)
+    private void RunTask(JarVoxelTerrain terrain, VoxelOctreeNode* chunk)
     {
-        while (ChunksToAdd.Count > 0)
-        {
-            if (ChunksToAdd.TryDequeue(out VoxelOctreeNode chunk))
-            {
-                run_task(terrain, chunk);
-            }
-            else
-                return;
-        }
-    }
-
-    private void run_task(JarVoxelTerrain terrain, VoxelOctreeNode chunk)
-    {
-        if (!chunk.is_chunk(terrain))
+        var terrainData = terrain.GetTerrainData();
+        if (!chunk->IsChunk(ref terrainData))
             return;
 
         var job = new MeshGenerationJob
         {
-            terrain = terrain,
+            terrain = terrainData,
             chunk = chunk,
-            ChunksToProcess = ChunksToProcess.AsParallelWriter()
+            ChunksToProcess = _chunksToProcess.AsParallelWriter()
         };
         _jobHandles.Add(job.Schedule());
     }
 
-    public void clear_queue()
+    public void ClearQueue()
     {
-        ChunksToAdd.Clear();
-        ChunksToProcess.Clear();
+        _chunksToAdd.Clear();
+        _chunksToProcess.Clear();
     }
 
-    public bool is_meshing()
+    public bool IsMeshing()
     {
-        return ChunksToAdd.Count > 0;
+        return _chunksToAdd.Count > 0 || _jobHandles.Length > 0;
+    }
+
+    public void Dispose()
+    {
+        _jobHandles.Dispose();
+        _chunksToAdd.Dispose();
+        _chunksToProcess.Dispose();
     }
 }
