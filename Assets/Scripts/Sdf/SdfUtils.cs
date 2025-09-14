@@ -6,7 +6,7 @@ using UnityEngine;
     public struct SdfUtils
     {
         [BurstCompile]
-        public static float Distance(in SdfData sdf, float3 pos)
+        public static float Distance(in SdfData sdf, in float3 pos)
         {
             switch (sdf.Type)
             {
@@ -25,23 +25,23 @@ using UnityEngine;
             }
         }
 
-        private static float SphereDistance(in SdfData sdf, float3 pos)
+        private static float SphereDistance(in SdfData sdf, in float3 pos)
         {
             return math.length(pos - sdf.Center) - sdf.Radius;
         }
 
-        private static float BoxDistance(in SdfData sdf, float3 pos)
+        private static float BoxDistance(in SdfData sdf, in float3 pos)
         {
             float3 q = math.abs(pos - sdf.Center) - sdf.Extent;
             return math.length(math.max(q, 0.0f)) + math.min(math.max(q.x, math.max(q.y, q.z)), 0.0f);
         }
 
-        private static float PlaneDistance(in SdfData sdf, float3 pos)
+        private static float PlaneDistance(in SdfData sdf, in float3 pos)
         {
             return math.dot(sdf.Normal, pos) + sdf.D;
         }
 
-        private static float PlanetDistance(in SdfData sdf, float3 pos)
+        private static float PlanetDistance(in SdfData sdf, in float3 pos)
         {
             float3 to_center = pos - sdf.Center;
             float base_distance = math.length(to_center) - sdf.Radius;
@@ -56,7 +56,7 @@ using UnityEngine;
             return base_distance - displacement;
         }
 
-        private static float TerrainDistance(in SdfData sdf, float3 pos)
+        private static float TerrainDistance(in SdfData sdf, in float3 pos)
         {
             // Placeholder for noise function
             float height = 0;

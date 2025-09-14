@@ -253,8 +253,7 @@ public unsafe struct VoxelOctreeNode
         return newBoundaries;
     }
 
-    public void Build(ref TerrainData terrain, Allocator allocator, NativeQueue<VoxelOctreeNodePointer>.ParallelWriter mainThreadUpdates, NativeQueue<ChunkDeleteRequest>.ParallelWriter chunkDeleteQueue)
-    {
+    public void Build(ref TerrainData terrain, Allocator allocator, NativeQueue<VoxelOctreeNodePointer>.ParallelWriter mainThreadUpdates, NativeQueue<ChunkDeleteRequest>.ParallelWriter chunkDeleteQueue)    {
         var stack = new NativeList<VoxelOctreeNodePointer>(128, allocator);
         
         fixed(VoxelOctreeNode* thisPtr = &this)
@@ -347,7 +346,8 @@ public unsafe struct VoxelOctreeNode
             }
 
             float oldValue = node->GetValue();
-            float sdfValue = SdfUtils.Distance(settings.Sdf, node->_center - settings.Position);
+            float3 position = node->_center - settings.Position;
+            float sdfValue = SdfUtils.Distance(settings.Sdf, position);
             float newValue = SdfData.ApplyOperation(settings.Operation, oldValue, sdfValue);
 
             if (node->HasSurface(ref terrain, newValue))

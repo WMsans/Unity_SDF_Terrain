@@ -238,7 +238,7 @@ public unsafe struct StitchedSurfaceNets
         if(face == 1) faceOffsets = new int3(0,1,0);
         else if (face == 2) faceOffsets = new int3(0,0,1);
 
-        var ringOffsets = new int3[8];
+        var ringOffsets = new NativeArray<int3>(8, Allocator.Temp);
         if (face == 0) { // X face
             ringOffsets[0] = new int3(0, 1, 0); ringOffsets[1] = new int3(0, -1, 0);
             ringOffsets[2] = new int3(0, 0, 1); ringOffsets[3] = new int3(0, 0, -1);
@@ -272,6 +272,7 @@ public unsafe struct StitchedSurfaceNets
                     result.Add(new int2(n1, -1));
             }
         }
+        ringOffsets.Dispose();
         return result;
     }
 

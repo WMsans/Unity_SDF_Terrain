@@ -6,6 +6,7 @@ using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using System;
+using UnityEngine.Rendering;
 
 /// <summary>
 /// Manages the generation, modification, and level-of-detail of a voxel terrain.
@@ -266,7 +267,12 @@ public class JarVoxelTerrain : MonoBehaviour
         {
             var mesh = new Mesh();
             mesh.SetVertices(meshData.vertices);
-            mesh.SetTriangles(meshData.indices, 0);
+            // Set triangles
+            mesh.SetIndexBufferParams(meshData.indices.Length, IndexFormat.UInt32);
+            mesh.SetIndexBufferData(meshData.indices, 0, 0, meshData.indices.Length);
+            SubMeshDescriptor subMesh = new SubMeshDescriptor(0, meshData.indices.Length, MeshTopology.Triangles);
+            mesh.SetSubMesh(0, subMesh);
+            
             mesh.RecalculateNormals();
             chunk.meshFilter.mesh = mesh;
             chunk.meshCollider.sharedMesh = mesh;
