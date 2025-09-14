@@ -43,7 +43,6 @@ public unsafe struct MeshComputeScheduler : IDisposable
         // Don't complete the job handle here, as it would stall the main thread.
         // Instead, use it as a dependency for the new jobs.
         
-        var handles = new NativeList<JobHandle>(_chunksToAdd.Count, Allocator.Temp);
         while (_chunksToAdd.TryDequeue(out VoxelOctreeNodePointer chunkPointer))
         {
             var terrainData = terrain.GetTerrainData();
@@ -56,18 +55,11 @@ public unsafe struct MeshComputeScheduler : IDisposable
                 chunk = chunkPointer.Value,
                 ChunksToProcess = _chunksToProcess.AsParallelWriter()
             };
-            // Schedule the new job with a dependency on the previous frame's jobs.
-            handles.Add(job.Schedule(_jobHandle));
-        }
 
-        // Combine the handles of all newly scheduled jobs.
-        // This new handle will be used as a dependency for the next frame's jobs.
-        if (handles.Length > 0)
-        {
-            _jobHandle = JobHandle.CombineDependencies(handles.AsArray());
+            // Ensure that each new job depends on the previously scheduled jobs
+            // to avoid race conditions when writing to the processing queue.
+            _jobHandle = job.Schedule(_jobHandle);
         }
-        
-        handles.Dispose();
     }
 
     public void ClearQueue()
