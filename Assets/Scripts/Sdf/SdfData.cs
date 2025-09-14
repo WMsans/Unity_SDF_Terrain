@@ -48,7 +48,7 @@ public struct SdfData
         switch (op)
         {
             case Operation.SDF_OPERATION_UNION: return math.min(d1, d2);
-            case Operation.SDF_OPERATION_SUBTRACTION: return math.max(-d1, d2);
+            case Operation.SDF_OPERATION_SUBTRACTION: return math.max(d1, -d2);
             case Operation.SDF_OPERATION_INTERSECTION: return math.max(d1, d2);
             // TODO: Implement smooth operations
             default: return d1;

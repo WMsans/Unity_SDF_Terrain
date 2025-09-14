@@ -15,9 +15,16 @@ public unsafe class JarVoxelChunkComponent : MonoBehaviour
         meshRenderer.material = new Material(Shader.Find("Standard"));
     }
 
-    public void SetNode(VoxelOctreeNode* n)
+    public unsafe void SetNode(VoxelOctreeNode* n)
     {
         node = n;
-        gameObject.name = $"Chunk_{node->_center.x}_{node->_center.y}_{node->_center.z}";
+        if (node != null)
+        {
+            gameObject.name = $"Chunk_{node->_center.x:F1}_{node->_center.y:F1}_{node->_center.z:F1}";
+        }
+        else
+        {
+            gameObject.name = "Chunk_NULL";
+        }
     }
 }

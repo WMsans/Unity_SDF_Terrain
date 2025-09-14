@@ -81,8 +81,21 @@ public unsafe struct MeshComputeScheduler : IDisposable
 
     public void Dispose()
     {
-        _jobHandles.Dispose();
-        _chunksToAdd.Dispose();
-        _chunksToProcess.Dispose();
+        // Complete any pending jobs before disposing
+        if (_jobHandles.IsCreated && _jobHandles.Length > 0)
+        {
+            JobHandle.CompleteAll(_jobHandles.AsArray());
+            _jobHandles.Clear();
+        }
+        
+        // Dispose of any remaining mesh data in the queue
+        while (_chunksToProcess.TryDequeue(out MeshGenerationResult result))
+        {
+            result.Dispose();
+        }
+        
+        if (_jobHandles.IsCreated) _jobHandles.Dispose();
+        if (_chunksToAdd.IsCreated) _chunksToAdd.Dispose();
+        if (_chunksToProcess.IsCreated) _chunksToProcess.Dispose();
     }
 }

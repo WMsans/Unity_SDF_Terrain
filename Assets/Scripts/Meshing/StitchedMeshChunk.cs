@@ -144,17 +144,16 @@ public unsafe struct StitchedMeshChunk : IDisposable
                 BurstBounds b;
                 int axis = i / 2;
                 if (axis == 0) // X
-                    b = new BurstBounds(new(0,0,0), new float3(0, 1, 1));
+                    b = new BurstBounds(new(), new float3(0, 1, 1));
                 else if (axis == 1) // Y
-                    b = new BurstBounds(new(0,0,0), new float3(1, 0, 1));
+                    b = new BurstBounds(new(), new float3(1, 0, 1));
                 else // Z
-                    b = new BurstBounds(new(0,0,0), new float3(1, 1, 0));
+                    b = new BurstBounds(new(), new float3(1, 1, 0));
                 
                 b.size *= edge_length;
                 b.center = chunkCenter + edge;
                 
-                if(acceptance_bounds.size.x == 0) acceptance_bounds = b;
-                else acceptance_bounds = new BurstBounds((acceptance_bounds.min + b.min) / 2, (acceptance_bounds.max + b.max) / 2);
+                acceptance_bounds = acceptance_bounds.size.x == 0 ? b : new BurstBounds((acceptance_bounds.min + b.min) / 2, (acceptance_bounds.max + b.max) / 2);
 
 
                 float3 difference = (edge_length * 2.0f / LEAF_COUNT) * abs((float3)CheckLodOffsets[i]);
@@ -215,7 +214,7 @@ public unsafe struct StitchedMeshChunk : IDisposable
         return count >= 2;
     }
 
-    public int get_node_index_at(int3 pos)
+    private int get_node_index_at(int3 pos)
     {
         if (any(pos < 0) || any(pos >= ChunkRes))
             return -1;
@@ -243,9 +242,8 @@ public unsafe struct StitchedMeshChunk : IDisposable
 
     public bool get_neighbours(int3 pos, ref NativeList<int> result)
     {
-        for (int i=0; i < Offsets.Length; i++)
+        foreach (var o in Offsets)
         {
-            var o = Offsets[i];
             var n = get_node_index_at(pos + o);
             if (n < 0)
             {
@@ -253,20 +251,21 @@ public unsafe struct StitchedMeshChunk : IDisposable
             }
             result.Add(n);
         }
+
         return true;
     }
 
     public bool get_ring_neighbours(int3 pos, ref NativeList<int> result)
     {
-       for (int i=0; i < Offsets.Length; i++)
+        foreach (var o in Offsets)
         {
-            var o = Offsets[i];
             if (!_ringLut.TryGetValue(pos + o, out int index) || index < 0)
             {
-                 return false;
+                return false;
             }
             result.Add(index);
         }
+
         return true;
     }
     

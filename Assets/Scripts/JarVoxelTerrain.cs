@@ -72,11 +72,15 @@ public class JarVoxelTerrain : MonoBehaviour
 
     private void OnDestroy()
     {
-        _voxelEpsilons.Dispose();
-        _modifySettingsQueue.Dispose();
-        _updateChunkCollidersQueue.Dispose();
-        _chunkDeleteQueue.Dispose();
+        if (_voxelEpsilons.IsCreated) _voxelEpsilons.Dispose();
+        if (_modifySettingsQueue.IsCreated) _modifySettingsQueue.Dispose();
+        if (_updateChunkCollidersQueue.IsCreated) _updateChunkCollidersQueue.Dispose();
+        if (_chunkDeleteQueue.IsCreated) _chunkDeleteQueue.Dispose();
+        
         _meshComputeScheduler.Dispose();
+        
+        // Properly dispose of the voxel octree memory
+        _voxelRoot.PruneChildren(Allocator.Persistent);
 
         foreach (var chunk in _activeChunks.Values)
         {
